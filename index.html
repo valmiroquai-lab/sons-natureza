@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Sons da Natureza</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1f1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Natureza">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root{
+  --bg:#0f1f1a; --card:#173028; --card-on:#1f5a43; --txt:#e8f3ec; --mut:#8fb2a2; --acc:#6fe3a6;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{min-height:100vh;padding:max(env(safe-area-inset-top),16px) 16px calc(env(safe-area-inset-bottom) + 24px);
+  background:radial-gradient(1200px 600px at 50% -10%,#1d4a3a 0%,var(--bg) 60%) no-repeat,var(--bg)}
+h1{font-size:26px;margin:8px 0 2px;font-weight:700}
+.sub{color:var(--mut);font-size:14px;margin:0 0 16px}
+.bar{display:flex;gap:10px;margin-bottom:16px}
+.bar button{flex:1;padding:12px 8px;border-radius:14px;border:0;background:var(--card);color:var(--txt);font-size:15px;font-weight:600}
+.bar button:active{transform:scale(.97)}
+.bar button.on{background:var(--card-on);color:var(--acc)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:var(--card);border-radius:20px;padding:14px 14px 12px;transition:background .25s,transform .1s;border:2px solid transparent}
+.card:active{transform:scale(.98)}
+.card.on{background:var(--card-on);border-color:var(--acc)}
+.card.wait{border-color:var(--mut)}
+.top{display:flex;align-items:center;gap:10px;cursor:pointer}
+.emoji{font-size:34px;line-height:1}
+.nome{font-size:17px;font-weight:600}
+.estado{font-size:12px;color:var(--mut)}
+.card.on .estado{color:var(--acc)}
+input[type=range]{width:100%;margin:14px 0 4px;accent-color:var(--acc);height:28px}
+.card:not(.on) input[type=range]{opacity:.35}
+.rodape{margin-top:20px;color:var(--mut);font-size:12px;text-align:center;line-height:1.5}
+</style>
+</head>
+<body>
+<h1>🌿 Sons da Natureza</h1>
+<p class="sub">Toque para ligar. Misture quantos quiser e ajuste o volume de cada um.</p>
+<div class="bar">
+  <button id="btnParar">⏹ Parar tudo</button>
+  <button id="btnTimer">⏲ Timer: desligado</button>
+</div>
+<div class="grid" id="grid"></div>
+<p class="rodape">Continua tocando com a tela bloqueada (controles na tela de bloqueio).<br>Sons gerados no aparelho — funciona offline.</p>
+
+<script>
+'use strict';
+const AC = window.AudioContext || window.webkitAudioContext;
+const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+const SR = 32000;            // taxa dos loops pré-gravados (economiza memória)
+let ctx, master, player;     // contexto de reprodução e elemento <audio> de saída
+let A, D;                    // contexto offline em construção e sua duração
+const rand = (a, b) => a + Math.random() * (b - a);
+const irand = (a, b) => Math.floor(rand(a, b + 1));
+
+/* ---------- geração de ruídos ---------- */
+const bufs = {};
+function nbuf(type, secs = 12) {
+  const key = type + secs;
+  if (bufs[key]) return bufs[key];
+  const len = Math.floor(SR * secs);
+  const buf = A.createBuffer(1, len, SR);
+  const d = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    if (type === 'white') d[i] = w;
+    else if (type === 'pink') {
+      b0 = .99886 * b0 + w * .0555179; b1 = .99332 * b1 + w * .0750759;
+      b2 = .96900 * b2 + w * .1538520; b3 = .86650 * b3 + w * .3104856;
+      b4 = .55000 * b4 + w * .5329522; b5 = -.7616 * b5 - w * .0168980;
+      d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * .5362) * .11; b6 = w * .115926;
+    } else { last = (last + .02 * w) / 1.02; d[i] = last * 3.5; }
+  }
+  return (bufs[key] = buf);
+}
+const kit = {
+  noise(type) { const s = A.createBufferSource(); s.buffer = nbuf(type); s.loop = true; s.start(0, rand(0, 4)); return s; },
+  filt(type, f, q = 1) { const n = A.createBiquadFilter(); n.type = type; n.frequency.value = f; n.Q.value = q; return n; },
+  gain(v) { const g = A.createGain(); g.gain.value = v; return g; },
+  lfo(freq, depth, param, type = 'sine') {
+    const o = A.createOscillator(); o.type = type; o.frequency.value = freq;
+    const g = A.createGain(); g.gain.value = depth; o.connect(g); g.connect(param); o.start();
+  },
+  chain(...n) { for (let i = 0; i < n.length - 1; i++) n[i].connect(n[i + 1]); return n[n.length - 1]; },
+  // agenda eventos (cantos, estalos...) ao longo de todo o loop
+  loop(fn, min, max, first) { for (let t = first ?? rand(min, max); t < D; t += rand(min, max)) fn(t); }
+};
+const k = kit;
+function pannedOut(out, pan) {
+  if (A.createStereoPanner && pan !== undefined) { const p = A.createStereoPanner(); p.pan.value = pan; p.connect(out); return p; }
+  return out;
+}
+function chirp(out, t, f0, f1, dur, vol, pan) {
+  const o = A.createOscillator(), g = A.createGain();
+  o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(50, f1), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + dur * .15);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(pannedOut(out, pan));
+  o.start(t); o.stop(t + dur + .05);
+}
+function burst(out, t, f, q, dur, vol, pan) {
+  const s = A.createBufferSource(); s.buffer = nbuf('white', 1);
+  const fl = A.createBiquadFilter(); fl.type = 'bandpass'; fl.frequency.value = f; fl.Q.value = q;
+  const g = A.createGain();
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(fl); fl.connect(g); g.connect(pannedOut(out, pan));
+  s.start(t, rand(0, .9)); s.stop(t + dur + .02);
+}
+
+/* ---------- os sons ---------- */
+function chuva(out) {
+  k.chain(k.noise('white'), k.filt('highpass', 700), k.filt('lowpass', 9000), k.gain(.22), out);
+  k.chain(k.noise('pink'), k.filt('lowpass', 1800), k.gain(.55), out);
+  k.loop(t => burst(out, t, rand(3000, 7000), 4, .03, rand(.02, .08), rand(-1, 1)), .025, .09, 0);
+}
+function vento(out) {
+  const bp = k.filt('bandpass', 450, .7), g = k.gain(.45);
+  k.chain(k.noise('brown'), bp, g, out);
+  k.lfo(.075, .3, g.gain); k.lfo(.05, 220, bp.frequency);
+  const bp2 = k.filt('bandpass', 1300, 9), g2 = k.gain(.05);
+  k.chain(k.noise('pink'), bp2, g2, out);
+  k.lfo(.1, .04, g2.gain); k.lfo(.075, 400, bp2.frequency);
+}
+function ondas(out) {
+  const g = k.gain(.3);
+  k.chain(k.noise('brown'), k.filt('lowpass', 900), g, out);
+  k.lfo(.1, .28, g.gain);
+  const g2 = k.gain(.1);
+  k.chain(k.noise('white'), k.filt('highpass', 1800), k.filt('lowpass', 7000), g2, out);
+  k.lfo(.1, .09, g2.gain);
+}
+function rio(out) {
+  k.chain(k.noise('pink'), k.filt('bandpass', 750, .6), k.gain(.55), out);
+  k.chain(k.noise('white'), k.filt('highpass', 3500), k.gain(.05), out);
+  const bp = k.filt('bandpass', 1400, 1.5), g = k.gain(.25);
+  k.chain(k.noise('pink'), bp, g, out); k.lfo(.35, 500, bp.frequency); k.lfo(.2, .1, g.gain);
+  k.loop(t => { const f = rand(300, 1200); chirp(out, t, f, f * rand(1.4, 2.2), rand(.04, .09), rand(.03, .09), rand(-.8, .8)); }, .04, .16, 0);
+}
+function fogo(out) {
+  k.chain(k.noise('brown'), k.filt('lowpass', 350), k.gain(.8), out);
+  const g = k.gain(.12); k.chain(k.noise('pink'), k.filt('bandpass', 900, .8), g, out); k.lfo(.8, .06, g.gain);
+  k.loop(t => {
+    const n = Math.random() < .25 ? irand(3, 7) : 1;
+    for (let i = 0; i < n; i++) burst(out, t + i * rand(.01, .05), rand(900, 5500), rand(1, 4), rand(.01, .05), rand(.15, .7), rand(-.6, .6));
+  }, .04, .38, 0);
+}
+function passaros(out) {
+  k.loop(t => {
+    const pan = rand(-.9, .9), base = rand(2200, 5200), r = Math.random();
+    if (r < .4) {
+      const n = irand(2, 6), sp = rand(.11, .17);
+      for (let i = 0; i < n; i++) chirp(out, t + i * sp, base * rand(.95, 1.1), base * rand(.7, 1.4), .09, .13, pan);
+    } else if (r < .7) {
+      const n = irand(10, 22);
+      for (let i = 0; i < n; i++) chirp(out, t + i * .052, base * (i % 2 ? 1 : 1.15), base * (i % 2 ? 1.2 : .95), .045, .09, pan);
+    } else {
+      const n = irand(2, 3);
+      for (let i = 0; i < n; i++) chirp(out, t + i * .42, base * .55 * (1 + i * .12), base * .7 * (1 + i * .12), .32, .14, pan);
+    }
+  }, .9, 4.2, .2);
+}
+function grilos(out) {
+  [[4300, 38, 2.6, -.5], [4650, 42, 3.1, .5], [4100, 35, 2.2, 0]].forEach(([f, pr, gr, pan]) => {
+    const o = A.createOscillator(); o.frequency.value = f; o.start();
+    const a = k.gain(.5); k.lfo(pr, .5, a.gain, 'square');
+    const gate = k.gain(.5); k.lfo(gr, .5, gate.gain, 'square');
+    k.chain(o, a, gate, k.gain(.05), pannedOut(out, pan));
+  });
+}
+function trovoada(out) {
+  k.loop(t => {
+    const dur = rand(3.5, 7);
+    const s = A.createBufferSource(); s.buffer = nbuf('brown'); s.loop = true;
+    const lp = A.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(rand(250, 500), t); lp.frequency.exponentialRampToValueAtTime(90, t + dur);
+    const g = A.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(rand(.7, 1.1), t + rand(.15, .6));
+    const bumps = irand(2, 4);
+    for (let i = 1; i <= bumps; i++) g.gain.linearRampToValueAtTime(rand(.3, .9), t + dur * i / (bumps + 1));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(lp); lp.connect(g); g.connect(out);
+    s.start(t, rand(0, 4)); s.stop(t + dur + .1);
+    burst(out, t, 1500, .5, .15, .3, 0);
+  }, 9, 20, 2.5);
+}
+
+/* ruídos de mascaramento — cobrem conversas e barulhos para concentração */
+function ruidoMarrom(out) { k.chain(k.noise('brown'), k.filt('lowpass', 2500), k.gain(.6), out); }
+function ruidoRosa(out) { k.chain(k.noise('pink'), k.gain(.5), out); }
+function ruidoBranco(out) { k.chain(k.noise('white'), k.filt('lowpass', 12000), k.gain(.15), out); }
+
+// len = duração do loop em segundos (escolhida para os ciclos fecharem certinho)
+const SOUNDS = [
+  { id: 'chuva', nome: 'Chuva', emoji: '🌧️', make: chuva, len: 20 },
+  { id: 'trovoada', nome: 'Trovoada', emoji: '⛈️', make: trovoada, len: 60, boost: 1.3 },
+  { id: 'vento', nome: 'Vento', emoji: '🍃', make: vento, len: 40, boost: 1.7 },
+  { id: 'ondas', nome: 'Ondas do mar', emoji: '🌊', make: ondas, len: 40 },
+  { id: 'rio', nome: 'Rio', emoji: '🏞️', make: rio, len: 20, boost: 1.6 },
+  { id: 'fogo', nome: 'Fogueira', emoji: '🔥', make: fogo, len: 30 },
+  { id: 'passaros', nome: 'Pássaros', emoji: '🐦', make: passaros, len: 45, boost: 3 },
+  { id: 'grilos', nome: 'Grilos', emoji: '🦗', make: grilos, len: 10, boost: 2.2 },
+  { id: 'marrom', nome: 'Ruído marrom', emoji: '🟤', make: ruidoMarrom, len: 24 },
+  { id: 'rosa', nome: 'Ruído rosa', emoji: '🩷', make: ruidoRosa, len: 24 },
+  { id: 'branco', nome: 'Ruído branco', emoji: '⚪', make: ruidoBranco, len: 24 },
+];
+
+/* ---------- pré-gravação em loop sem emenda ---------- */
+const cache = {};
+async function renderSound(s) {
+  const X = 3, total = s.len + X;
+  A = new OAC(2, Math.floor(total * SR), SR); D = total;
+  const out = A.createGain(); out.gain.value = s.boost || 1; out.connect(A.destination);
+  s.make(out);
+  const buf = await A.startRendering();
+  const n = Math.floor(s.len * SR), x = Math.floor(X * SR);
+  const res = ctx.createBuffer(2, n, SR);
+  for (let ch = 0; ch < 2; ch++) {
+    const src = buf.getChannelData(ch), dst = res.getChannelData(ch);
+    dst.set(src.subarray(0, n));
+    for (let i = 0; i < x; i++) { const a = i / x; dst[i] = src[i] * Math.sqrt(a) + src[n + i] * Math.sqrt(1 - a); }
+  }
+  return res;
+}
+
+/* ---------- saída de áudio (mantém tocando com tela bloqueada) ---------- */
+function ensureCtx() {
+  if (!ctx) {
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+    ctx = new AC();
+    master = ctx.createGain(); master.gain.value = 1;
+    const comp = ctx.createDynamicsCompressor();
+    master.connect(comp);
+    // Envia a mistura para um <audio> — o iOS trata como mídia e não corta ao bloquear
+    if (ctx.createMediaStreamDestination) {
+      const dest = ctx.createMediaStreamDestination();
+      comp.connect(dest);
+      player = document.createElement('audio');
+      player.setAttribute('playsinline', ''); player.autoplay = true;
+      player.srcObject = dest.stream;
+      document.body.appendChild(player);
+    } else comp.connect(ctx.destination);
+    ctx.onstatechange = () => { if (ctx.state !== 'running' && Object.keys(active).length && !pausado) ctx.resume(); };
+    setupMediaSession();
+  }
+  if (ctx.state !== 'running') ctx.resume();
+  if (player && player.paused) player.play().catch(() => {});
+}
+let pausado = false;
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  const ms = navigator.mediaSession;
+  ms.setActionHandler('play', () => { pausado = false; ctx.resume(); player && player.play(); updateMedia(); });
+  ms.setActionHandler('pause', () => { pausado = true; ctx.suspend(); player && player.pause(); updateMedia(); });
+  try { ms.setActionHandler('stop', () => stopAll()); } catch (e) {}
+}
+function updateMedia() {
+  if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+  const nomes = SOUNDS.filter(s => active[s.id]).map(s => s.nome).join(' + ');
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: nomes || 'Sons da Natureza', artist: 'Sons da Natureza',
+      artwork: [{ src: new URL('icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }]
+    });
+  } catch (e) {
+    try { navigator.mediaSession.metadata = new MediaMetadata({ title: nomes || 'Sons da Natureza', artist: 'Sons da Natureza' }); } catch (e2) {}
+  }
+  navigator.mediaSession.playbackState = nomes && !pausado ? 'playing' : 'paused';
+}
+
+/* ---------- controle ---------- */
+const active = {}, pending = {};
+let vols = {};
+try { vols = JSON.parse(localStorage.getItem('vols') || '{}'); } catch (e) {}
+const saveVols = () => { try { localStorage.setItem('vols', JSON.stringify(vols)); } catch (e) {} };
+const volOf = s => vols[s.id] ?? .6;
+
+async function start(s) {
+  ensureCtx(); pausado = false;
+  pending[s.id] = true; render(s.id);
+  try { if (!cache[s.id]) cache[s.id] = await renderSound(s); }
+  catch (e) { console.error(e); delete pending[s.id]; render(s.id); return; }
+  if (!pending[s.id]) return;           // usuário desligou enquanto preparava
+  delete pending[s.id];
+  const src = ctx.createBufferSource(); src.buffer = cache[s.id]; src.loop = true;
+  const out = ctx.createGain(); out.gain.value = 0.0001;
+  out.gain.setTargetAtTime(volOf(s), ctx.currentTime, .3);
+  src.connect(out); out.connect(master); src.start();
+  active[s.id] = { src, out };
+  render(s.id); updateMedia();
+}
+function stop(s) {
+  if (pending[s.id]) { delete pending[s.id]; render(s.id); return; }
+  const a = active[s.id]; if (!a) return;
+  delete active[s.id];
+  a.out.gain.setTargetAtTime(0, ctx.currentTime, .15);
+  setTimeout(() => { try { a.src.stop(); a.out.disconnect(); } catch (e) {} }, 900);
+  render(s.id); updateMedia();
+}
+const toggle = s => (active[s.id] || pending[s.id] ? stop(s) : start(s));
+function stopAll() { SOUNDS.forEach(stop); }
+
+/* ---------- interface ---------- */
+const grid = document.getElementById('grid');
+const els = {};
+SOUNDS.forEach(s => {
+  const c = document.createElement('div'); c.className = 'card';
+  c.innerHTML = `<div class="top"><div class="emoji">${s.emoji}</div><div><div class="nome">${s.nome}</div><div class="estado">desligado</div></div></div>
+  <input type="range" min="0" max="1" step="0.01" value="${volOf(s)}" aria-label="Volume ${s.nome}">`;
+  c.querySelector('.top').addEventListener('click', () => toggle(s));
+  const r = c.querySelector('input');
+  r.addEventListener('input', () => {
+    vols[s.id] = +r.value; saveVols();
+    const a = active[s.id]; if (a) a.out.gain.setTargetAtTime(+r.value, ctx.currentTime, .05);
+  });
+  grid.appendChild(c); els[s.id] = c;
+});
+function render(id) {
+  const on = !!active[id], wait = !!pending[id], c = els[id];
+  c.classList.toggle('on', on); c.classList.toggle('wait', wait);
+  c.querySelector('.estado').textContent = on ? 'tocando' : wait ? 'preparando…' : 'desligado';
+  document.getElementById('btnParar').classList.toggle('on', Object.keys(active).length > 0);
+}
+document.getElementById('btnParar').addEventListener('click', stopAll);
+
+/* ---------- timer para dormir (agendado no motor de áudio: funciona bloqueado) ---------- */
+const btnT = document.getElementById('btnTimer');
+const OPCOES = [0, 15, 30, 60, 120];
+let oi = 0, deadline = 0, tInt = null;
+function renderTimer() {
+  if (!oi) { btnT.textContent = '⏲ Timer: desligado'; btnT.classList.remove('on'); return; }
+  const rest = Math.max(0, deadline - Date.now()), m = Math.floor(rest / 60000), s = Math.floor(rest / 1000) % 60;
+  btnT.textContent = `⏲ ${m}:${String(s).padStart(2, '0')}`; btnT.classList.add('on');
+}
+function resetMaster() { const g = master.gain; g.cancelScheduledValues(ctx.currentTime); g.setValueAtTime(1, ctx.currentTime); }
+btnT.addEventListener('click', () => {
+  ensureCtx();
+  oi = (oi + 1) % OPCOES.length;
+  clearInterval(tInt); resetMaster();
+  if (oi) {
+    const secs = OPCOES[oi] * 60, now = ctx.currentTime;
+    deadline = Date.now() + secs * 1000;
+    master.gain.setValueAtTime(1, now + secs - 20);
+    master.gain.linearRampToValueAtTime(0, now + secs);   // desvanece nos últimos 20 s
+    tInt = setInterval(() => {
+      if (Date.now() >= deadline) {
+        clearInterval(tInt); oi = 0; renderTimer();
+        stopAll(); setTimeout(resetMaster, 1000);
+      } else renderTimer();
+    }, 1000);
+  }
+  renderTimer();
+});
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http'))
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
